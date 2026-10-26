@@ -1,0 +1,33 @@
+menu "no-OS Workshop Configuration"
+
+choice WORKSHOP_EXAMPLE
+	prompt "Example variant"
+	default WORKSHOP_EXAMPLE_1
+
+config WORKSHOP_EXAMPLE_1
+	bool "Workshop example 1"
+	help
+	  Simple example that prints "Hello World" to the UART
+
+config WORKSHOP_EXAMPLE_2
+	bool "Workshop example 2"
+	help
+	  Simple example that retrieves and prints a temperature
+	  reading from an ADXL accelerometer connected over SPI
+
+config WORKSHOP_EXAMPLE_3
+	bool "Workshop example 3"
+	help
+	  Data conversion example that demonstrates fixed-point
+	  arithmetic for converting raw sensor values to physical
+	  units. Students must implement the conversion formulas.
+
+config WORKSHOP_IIO_EXAMPLE
+	bool "Workshop IIO example"
+	help
+	  IIO framework example. Launches an IIOD server for remote
+	  data acquisition using IIO Oscilloscope or libiio clients 
+
+endchoice
+
+endmenu

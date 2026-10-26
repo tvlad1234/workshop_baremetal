@@ -2,31 +2,60 @@
 set -e
 
 WORKSHOP_DIR="$HOME/workshop_baremetal"
-NO_OS_REPO="https://github.com/tvlad1234/no-OS.git"
-NO_OS_BRANCH="workshop"
+NO_OS_REPO="https://github.com/analogdevicesinc/no-OS.git"
+NO_OS_COMMIT="a63095e3d365f6612f78b0fd8204a6ba5afd5fd2"
 
 OPENOCD_REPO="https://github.com/analogdevicesinc/openocd.git"
 OPENOCD_BRANCH="0.12.0-1.4.0"
 
 MSDK_REPO="https://github.com/analogdevicesinc/msdk.git"
+MSDK_COMMIT="fbcdf639d7deea2e518108b0a82b50b3a8a4c2f3"
+
+# checkout_pinned <dir> <repo> <commit>
+# Shallow-fetch exactly one commit into <dir> and check it out detached.
+checkout_pinned() {
+    local dir="$1" repo="$2" commit="$3"
+
+    if [ ! -d "$dir/.git" ]; then
+        git init "$dir"
+        git -C "$dir" remote add origin "$repo"
+    fi
+
+    if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$commit" ]; then
+        echo "checking out $(basename "$dir") $commit"
+        git -C "$dir" fetch --depth 1 origin "$commit"
+        git -C "$dir" checkout --detach FETCH_HEAD
+    else
+        echo "$(basename "$dir") already at $commit"
+    fi
+}
 
 if [ ! -f /etc/udev/rules.d/99-daplink.rules ]; then
+    echo "configuring daplink udev rules"
     sudo tee /etc/udev/rules.d/99-daplink.rules << 'EOF'
 # DAPLink/CMSIS-DAP - USB interface
 SUBSYSTEM=="usb", ATTR{idVendor}=="0d28", ATTR{idProduct}=="0204", MODE="0666"
 
-# DAPLink/CMSIS-DAP - HID interface  
+# DAPLink/CMSIS-DAP - HID interface
 KERNEL=="hidraw*", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"
 EOF
     sudo udevadm control --reload-rules
     sudo udevadm trigger
-    sudo usermod -a -G dialout,plugdev,tty $USER
+    sudo usermod -a -G dialout,plugdev,tty "$USER"
 else
     echo "daplink udev rules already exist"
 fi
 
+echo "installing os dependencies"
 sudo apt update
 sudo apt install -y \
+    git \
+    build-essential \
+    autoconf \
+    automake \
+    texinfo \
+    cmake \
+    ninja-build \
     make \
     libtool \
     pkgconf \
@@ -45,43 +74,44 @@ sudo apt install -y \
 
 mkdir -p "$WORKSHOP_DIR"
 
-if [ -d "$WORKSHOP_DIR/no-OS" ]; then
-    echo "no-OS already exists, skipping"
+checkout_pinned "$WORKSHOP_DIR/no-OS" "$NO_OS_REPO" "$NO_OS_COMMIT"
+checkout_pinned "$WORKSHOP_DIR/msdk" "$MSDK_REPO" "$MSDK_COMMIT"
+
+# Expose the workshop project inside no-OS so its build system can find it
+if [ -e "$WORKSHOP_DIR/no-OS/projects/workshop" ] && [ ! -L "$WORKSHOP_DIR/no-OS/projects/workshop" ]; then
+    echo "no-OS/projects/workshop exists and is not a symlink, leaving it alone"
 else
-    cd "$WORKSHOP_DIR"
-    git clone -b "$NO_OS_BRANCH" "$NO_OS_REPO"
+    ln -sfn "$WORKSHOP_DIR/workshop" "$WORKSHOP_DIR/no-OS/projects/workshop"
 fi
 
-if ! command -v openocd >/dev/null 2>&1; then
-    echo "openocd not found, building from source..."
-    cd "$WORKSHOP_DIR"
+# This modifies a tracked file. If NO_OS_COMMIT is changed later and the new
+# commit touches projects/Kconfig, run
+#   git -C no-OS checkout -- projects/Kconfig
+# before re-running this script.
+NO_OS_KCONFIG="$WORKSHOP_DIR/no-OS/projects/Kconfig"
+if ! grep -qF 'source "projects/workshop/Kconfig"' "$NO_OS_KCONFIG"; then
+    echo "adding workshop to no-OS projects/Kconfig"
+    sed -i '/^endmenu/i source "projects/workshop/Kconfig"' "$NO_OS_KCONFIG"
+fi
 
-    if [ -d "$WORKSHOP_DIR/openocd" ]; then
-        echo "openocd repo already exists"
-    else
-        git clone --depth 1 -b "$OPENOCD_BRANCH" "$OPENOCD_REPO"
+if [ ! -x "$WORKSHOP_DIR/openocd/src/openocd" ]; then
+    echo "building openocd from source..."
+
+    if [ ! -d "$WORKSHOP_DIR/openocd" ]; then
+        git clone --depth 1 -b "$OPENOCD_BRANCH" "$OPENOCD_REPO" "$WORKSHOP_DIR/openocd"
     fi
 
-    cd openocd
+    cd "$WORKSHOP_DIR/openocd"
     ./bootstrap
     ./configure
-    make -j$(nproc)
-    sudo make install
+    make -j"$(nproc)"
 fi
 
-if [ -d "$WORKSHOP_DIR/msdk" ]; then
-    echo "msdk already exists, skipping"
-else
-    cd "$WORKSHOP_DIR"
-    git clone --depth 1 "$MSDK_REPO"
-fi
+# The no-OS maxim toolchain looks for OpenOCD in $MAXIM_LIBRARIES/../Tools/OpenOCD
+# (openocd binary + scripts dir), so link the locally built one there.
+OPENOCD_TOOLS="$WORKSHOP_DIR/msdk/Tools/OpenOCD"
+mkdir -p "$OPENOCD_TOOLS"
+ln -sfn "$WORKSHOP_DIR/openocd/src/openocd" "$OPENOCD_TOOLS/openocd"
+ln -sfn "$WORKSHOP_DIR/openocd/tcl" "$OPENOCD_TOOLS/scripts"
 
-LINE="export MAXIM_LIBRARIES=$WORKSHOP_DIR/msdk/Libraries"
-BASHRC="$HOME/.bashrc"
-
-if ! grep -qxF "$LINE" "$BASHRC"; then
-   echo "$LINE" >> "$BASHRC"
-   echo "Added MAXIM_LIBRARIES to $BASHRC"
-else
-     echo "MAXIM_LIBRARIES already set in $BASHRC"
-fi
+echo "setup complete, log out and back in for USB group changes to take effect"
